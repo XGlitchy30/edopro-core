@@ -32,12 +32,15 @@ protected:
 struct Adjust : public Process<false> {
 	Adjust(uint16_t step_) : Process(step_) {}
 };
+
 struct Turn : public Process<false> {
 	uint8_t turn_player;
-	bool has_performed_second_battle_phase;
-	Turn(uint16_t step_, uint8_t turn_player_) : Process(step_), turn_player(turn_player_),
-		has_performed_second_battle_phase(false) {}
+	// [stackable_bp]: the below bool is DEPRECATED under new BP-stacking method
+	// bool has_performed_second_battle_phase;
+	Turn(uint16_t step_, uint8_t turn_player_) : Process(step_), 	turn_player(turn_player_) {}
+		//has_performed_second_battle_phase(false) {}
 };
+
 struct RefreshLoc : public Process<false> {
 	uint8_t dis_count;
 	uint32_t previously_disabled_locations;

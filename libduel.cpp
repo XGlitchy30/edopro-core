@@ -4187,6 +4187,36 @@ LUA_STATIC_FUNCTION(GetReasonEffect) {
 	interpreter::pushobject(L, pduel->game_field->core.reason_effect);
 	return 1;
 }
+
+
+// [stackable_bp] functions
+LUA_STATIC_FUNCTION(AddBattlePhase) {
+	// Duel.AddBattlePhase([count, optional]): adds (count) BPs to the current turn. If (optional) is true, each of the added BPs is optional to conduct
+	auto count = lua_get<uint32_t, 1>(L, 1);
+	auto optional = lua_get<bool, false>(L, 2);
+
+	auto& field = *pduel->game_field;
+	if(count == 0) {
+		lua_pushboolean(L, FALSE);
+		return 1;
+	}
+	auto& grants = optional ? field.core.additional_bp_optional : field.core.additional_bp_mandatory;
+	grants = static_cast<uint8_t>(std::min<uint32_t>(grants + count, 0xff));
+	lua_pushboolean(L, TRUE);
+	return 1;
+}
+LUA_STATIC_FUNCTION(GetAdditionalBattlePhaseCount) {
+	// Duel.GetAdditionalBattlePhaseCount: Returns the total number of additional BPs registered for the current turn
+	// along with the (mandatory, optional) partition
+	const auto mandatory = pduel->game_field->core.additional_bp_mandatory;
+	const auto optional = pduel->game_field->core.additional_bp_optional;
+	auto tot = static_cast<uint8_t>(std::min(mandatory + optional, 0xff));
+	lua_pushinteger(L, tot);
+	lua_pushinteger(L, mandatory);
+	lua_pushinteger(L, optional);
+	return 3;
+}
+
 #define INFO_FUNC_FROM_CODE(lua_name,attr) \
 LUA_STATIC_FUNCTION(GetCard ##lua_name ##FromCode) { \
 	check_param_count(L, 1); \

@@ -360,6 +360,15 @@ struct processor {
 	bool spsummon_rst;
 	uint8_t attack_state_count[2];
 	uint8_t battle_phase_count[2];
+
+	// [stackable_bp]: pending BP repetitions of the turn player, reset every turn.
+	// Grants are added by Duel.AddBattlePhase and consumed at the end of BP to conduct it again, with mandatory ones
+	// having priority over optional ones.
+	// EFFECT_BP_TWICE is converted into a single grant, at most OPT (bp_twice_used), so "twice" effects do not stack
+	uint8_t additional_bp_mandatory{ 0 };
+	uint8_t additional_bp_optional{ 0 };
+	bool bp_twice_used{ false };
+
 	uint8_t battled_count[2];
 	bool phase_action;
 	uint32_t hint_timing[2];
