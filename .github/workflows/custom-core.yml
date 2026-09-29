@@ -145,8 +145,8 @@ jobs:
         run: |
           ./premake5 gmake2
           sudo docker exec -t -w /core musl \
-           make -Cbuild ocgcoreshared -j"$(nproc)"" config=$BUILD_CONFIG$ LDFLAGS="-static -Wl,-Bstatic"
-          sudo chown -R $USER bin
+            make -Cbuild ocgcoreshared -j"$(nproc)" config="$BUILD_CONFIG" LDFLAGS="-static -Wl,-Bstatic"
+          sudo chown -R "$USER" bin
       
       - name: Predeploy
         run: ./scripts/predeploy.sh
@@ -211,8 +211,7 @@ jobs:
         run: |
           sudo mkdir -p /opt
           cd /opt
-          sudo wget -q
-          https://github.com/edo9300/cctools-build/releases/download/osxcross/cctools.tar.xz
+          sudo wget -q https://github.com/edo9300/cctools-build/releases/download/osxcross/cctools.tar.xz
           sudo tar xf cctools.tar.xz
           echo "/opt/cctools/bin" >> "$GITHUB_PATH"
           echo "/opt/cctools/clang/bin" >> "$GITHUB_PATH"
