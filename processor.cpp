@@ -2758,20 +2758,64 @@ bool field::process(Processors::BattleCommand& arg) {
 		return FALSE;
 	}
 	case 42: {
+		// [stackable_bp]: at the end of the Battle Phase (after its End Step), decide whether it is conducted again.
 		core.attacker = nullptr;
 		core.attack_target = nullptr;
-		if(arg.repeat_battle_phase && arg.second_battle_phase_is_optional) {
-			emplace_process<Processors::SelectYesNo>(infos.turn_player, 32);
-			return FALSE;
+		const bool bp_twice_prompt = arg.repeat_battle_phase && arg.second_battle_phase_is_optional;
+
+		if(arg.forced_attack) {
+			// [stackable_bp]: Duel.ForceAttack is not a Battle Phase conducted by the turn player, so grants are neither
+			// used nor consumed.
+			if(bp_twice_prompt) {
+				return FALSE;
+			}
+			returns.set<int32_t>(0, arg.phase_to_change_to);
+			returns.set<int32_t>(1, FALSE);
+			return TRUE;
 		}
+		// [stackable_bp]: all the EFFECT_BP_TWICE effs together grant a single repetition per turn
+		if(arg.repeat_battle_phase && !core.bp_twice_used) {
+			core.bp_twice_used = true;
+			auto& grants = bp_twice_prompt ? core.additional_bp_optional : core.additional_bp_mandatory;
+			if(grants < 0xff)
+				++grants;
+		}
+		bool repeat = false;
+		if(!core.force_turn_end) {
+			if(core.additional_bp_mandatory > 0) {
+				--core.additional_bp_mandatory;
+				repeat = true;
+			} else if(core.additional_bp_optional > 0) {
+				emplace_process<Processors::SelectYesNo>(infos.turn_player, 32);
+				return FALSE;
+			}
+		}
+		if(!repeat) {
+			// [stackable_bp]: lose all unused grants if BP is left
+			core.additional_bp_mandatory = 0;
+			core.additional_bp_optional = 0;
+		}
+
 		returns.set<int32_t>(0, arg.phase_to_change_to);
-		returns.set<int32_t>(1, arg.repeat_battle_phase);
+		returns.set<int32_t>(1, repeat);
 		return TRUE;
 	}
 	case 43: {
-		auto bp_twice = returns.at<int32_t>(0);
+		// [stackable_bp]: handle answer to "Conduct another BP?" prompt
+		bool repeat = false;
+		if(!arg.forced_attack) {
+			auto bp_twice = returns.at<int32_t>(0);
+			if(bp_twice) {
+				--core.additional_bp_optional;
+				repeat = true;
+			} else {
+				core.additional_bp_mandatory = 0;
+				core.additional_bp_optional = 0;
+			}
+		}
+
 		returns.set<int32_t>(0, arg.phase_to_change_to);
-		returns.set<int32_t>(1, bp_twice);
+		returns.set<int32_t>(1, repeat);
 		return TRUE;
 	}
 	}
@@ -3267,6 +3311,7 @@ bool field::process(Processors::Turn& arg) {
 		core.effect_count_code.clear();
 		for(uint8_t p = 0; p < 2; ++p) {
 			for(auto& pcard : player[p].list_mzone) {
+				// monster-specific turn state resets
 				if(!pcard)
 					continue;
 				pcard->set_status(STATUS_SUMMON_TURN, FALSE);
@@ -3284,11 +3329,13 @@ bool field::process(Processors::Turn& arg) {
 				pcard->attack_all_target = TRUE;
 			}
 			for(auto& pcard : player[p].list_szone) {
+				// backrow-specific turn state resets
 				if(!pcard)
 					continue;
 				pcard->set_status(STATUS_SET_TURN, FALSE);
 				pcard->indestructable_effects.clear();
 			}
+			// player-specific turn state resets
 			core.summon_state_count[p] = 0;
 			core.normalsummon_state_count[p] = 0;
 			core.flipsummon_state_count[p] = 0;
@@ -3302,6 +3349,11 @@ bool field::process(Processors::Turn& arg) {
 			core.spsummon_once_map[p].clear();
 			core.spsummon_once_map_rst[p].clear();
 		}
+		// global turn state resets (not specific to any player)
+		core.additional_bp_mandatory = 0;
+		core.additional_bp_optional = 0;
+		core.bp_twice_used = false;
+
 		emplace_process<Processors::RefreshRelay>();
 		return FALSE;
 	}
@@ -3508,8 +3560,7 @@ bool field::process(Processors::Turn& arg) {
 		return FALSE;
 	}
 	case 13: {
-		if(!arg.has_performed_second_battle_phase && returns.at<int32_t>(1)) { // 2nd Battle Phase
-			arg.has_performed_second_battle_phase = true;
+		if(returns.at<int32_t>(1)) { // repeated Battle Phase
 			arg.step = 9;
 			for(uint8_t p = 0; p < 2; ++p) {
 				for(auto& pcard : player[p].list_mzone) {
@@ -3525,7 +3576,6 @@ bool field::process(Processors::Turn& arg) {
 			}
 			return FALSE;
 		}
-		arg.has_performed_second_battle_phase = false;
 		if(is_flag(DUEL_NO_MAIN_PHASE_2)) {
 			arg.step = 15;
 			adjust_all();
