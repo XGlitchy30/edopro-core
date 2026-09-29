@@ -1,0 +1,372 @@
+# .github/workflows/custom-core.yml
+#
+# Builds every ocgcore binary the EDOPro client can load from a repository
+# (see CORENAME in edopro gframe/dllinterface.cpp), assigns the final file
+# names in ONE place (job "assemble"), verifies the result with
+# .github/scripts/verify_cores.py and, optionally, publishes it to a
+# repository.
+#
+# The build jobs call the fork's own scripts/ (install-premake5, build-premake5*,
+# setup-ndk, build-android, predeploy) in the same way as upstream's
+# .github/workflows/ygopro-core.yml, so script changes
+# coming from upstream are picked up automatically when fork is synced.
+#
+# Files produced (final names):
+#   ocgcore.dll            Windows, 32-bit (the official client is 32-bit)
+#   libocgcore.so          Linux x86-64, fully static (musl)
+#   libocgcore.aarch64.so  Linux AArch64, fully static (musl)
+#   libocgcore.dylib       macOS universal (x86_64 + arm64)
+#   libocgcorev7.so        Android armeabi-v7a
+#   libocgcorev8.so        Android arm64-v8a
+#   libocgcorex86.so       Android x86
+#   libocgcorex64.so       Android x86-64 (only if INCLUDE_ANDROID_X64 is "true")
+#   commit                 SHA of the commit the binaries were built from
+
+name: Build custom core
+
+on:
+  push:
+    branches:
+      - custom
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified binaries to the repository in the CORE_PUBLISH_REPO variable
+        type: boolean
+        default: false
+      expected_version:
+        description: 'OCG API version the client must accept, e.g. 11.0 ("reference" = read it from the official core)'
+        type: string
+        default: reference
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-core-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  BUILD_CONFIG: release
+  DEPLOY_DIR: ocgcore
+  OBJCOPY_BIN: ./scripts/llvm-objcopy
+  STRIP_BIN: ./scripts/llvm-strip
+  NDK_VERSION: 21.4.7075529
+  WINDOWS_XP_SUPPORT: "false"
+  INCLUDE_ANDROID_X64: "false"
+  REFERENCE_REPO: https://github.com/ProjectIgnis/DeltaBagooska
+
+jobs:
+
+  # ----- WINDOWS -----
+  windows-x86:
+    name: Windows x86
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      TRAVIS_OS_NAME: windows
+      VISUAL_STUDIO_VERSION: vs2022
+      VISUAL_STUDIO_ARCH: Win32
+      STRIP: 0
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v3
+      
+      - name: Install Windows XP toolset
+        if: env.WINDOWS_XP_SUPPORT == 'true'
+        shell: pwsh
+        run: |
+          Set-Location "C:\Program Files (x86)\Microsoft Visual Studio\Installer\"
+          $InstallPath = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+          $componentsToAdd= @(
+            "Microsoft.VisualStudio.Component.VC.v141.x86.x64",
+            "Microsoft.VisualStudio.Component.WinXP"
+          )
+          [string]$workloadArgs = $componentsToAdd | ForEach-Object {" --add " +  $_}
+          $Arguments = ('/c', "vs_installer.exe", 'modify', '--installPath', "`"$InstallPath`"",$workloadArgs, '--quiet', '--norestart', '--nocache')
+          $process = Start-Process -FilePath cmd.exe -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
+      
+      - name: Install premake
+        shell: cmd
+        run: scripts\install-premake5
+      
+      - name: Build ocgcoreshared (Win32)
+        run: |
+          if [[ "$WINDOWS_XP_SUPPORT" == "true" ]]; then
+            export PREMAKE_FLAGS="--oldwindows=true"
+          else
+            export PREMAKE_FLAGS=""
+          fi
+          ./scripts/build-premake5-msvc.sh
+      
+      - name: Predeploy
+        run: ./scripts/predeploy.sh
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: core-windows-x86
+          path: ocgcore/
+          if-no-files-found: error
+  
+  # ----- LINUX -----
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    env:
+      TRAVIS_OS_NAME: linux
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      
+      - name: Start musl toolchain container
+        run: |
+          sudo docker build --build-arg target_arch=${{ matrix.arch }}-linux-musl \
+          -t musl-toolchain -f ./scripts/Dockerfile .
+          sudo docker run -dt --rm --name musl -v "$PWD:/core" -w /core musl-toolchain
+      
+      - name: Install premake
+        run: ./scripts/install-premake5.sh
+      
+      - name: Build ocgcoreshared
+        run: |
+          ./premake5 gmake2
+          sudo docker exec -t -w /core musl \
+           make -Cbuild ocgcoreshared -j"$(nproc)"" config=$BUILD_CONFIG$ LDFLAGS="-static -Wl,-Bstatic"
+          sudo chown -R $USER bin
+      
+      - name: Predeploy
+        run: ./scripts/predeploy.sh
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: core-linux-${{ matrix.arch }}
+          path: ocgcore/
+          if-no-files-found: error
+  
+  # ----- ANDROID -----
+  android:
+    name: Android
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      TRAVIS_OS_NAME: linux
+      TARGET_OS: android
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      
+      - name: Set up Android NDK
+        run: ./scripts/setup-ndk.sh
+      
+      - name: Build
+        run: ./scripts/build-android.sh
+
+      - name: Predeploy
+        run: ./scripts/predeploy.sh
+      
+      - uses: actions/upload-artifact@v6
+        with:
+          name: core-android
+          path: ocgcore/
+          if-no-files-found: error
+    
+  # ----- macOS -----
+  macos:
+    name: macOS ${{ matrix.arch }} slice
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    env:
+      TRAVIS_OS_NAME: linux
+      TARGET_OS: macosx
+      CC: /opt/cctools/bin/${{ matrix.arch }}-apple-darwin21.4-clang
+      CXX: /opt/cctools/bin/${{ matrix.arch }}-apple-darwin21.4-clang++-gstdc++
+      AR: /opt/cctools/bin/${{ matrix.arch }}-apple-darwin21.4-ar
+      RANLIB: /opt/cctools/bin/${{ matrix.arch }}-apple-darwin21.4-ranlib
+      STRIP: 0
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      
+      - name: Download cctools
+        run: |
+          sudo mkdir -p /opt
+          cd /opt
+          sudo wget -q
+          https://github.com/edo9300/cctools-build/releases/download/osxcross/cctools.tar.xz
+          sudo tar xf cctools.tar.xz
+          echo "/opt/cctools/bin" >> "$GITHUB_PATH"
+          echo "/opt/cctools/clang/bin" >> "$GITHUB_PATH"
+
+      - name: Install premake
+        run: ./scripts/install-premake5.sh
+
+      - name: Build ocgcoreshared
+        run: ./scripts/build-premake5.sh
+
+      - name: Predeploy
+        run: ./scripts/predeploy.sh
+      
+      - uses: actions/upload-artifact@v6
+        with:
+          name: core-macos-${{ matrix.arch }}
+          path: ocgcore/
+          if-no-files-found: error
+  
+  # ----- ASSEMBLE AND VERIFY -----
+  assemble:
+    name: Assemble and verify
+    needs: [windows-x86, linux, android, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: core-*
+          path: staging
+      
+      - name: Download lipo
+        run: |
+          wget -q https://github.com/edo9300/cctools-build/releases/download/preview/lipo
+          chmod +x lipo
+      
+      - name: Assemble bin
+        run: |
+          mkdir -p bin debug
+          place() {  # place <artifact>/<file> <final name>
+            cp -v "staging/$1" "bin/$2"
+          }
+          place core-windows-x86/ocgcore.dll      ocgcore.dll
+          place core-linux-x86_64/libocgcore.so   libocgcore.so
+          place core-linux-aarch64/libocgcore.so  libocgcore.aarch64.so
+          place core-android/libocgcorev7.so      libocgcorev7.so
+          place core-android/libocgcorev8.so      libocgcorev8.so
+          place core-android/libocgcorex86.so     libocgcorex86.so
+          if [[ "$INCLUDE_ANDROID_X64" == "true" ]]; then
+            place core-android/libocgcorex64.so   libocgcorex64.so
+          fi
+          ./lipo -create -output bin/libocgcore.dylib \
+            staging/core-macos-x86_64/libocgcore.dylib \
+            staging/core-macos-aarch64/libocgcore.dylib
+          echo "$GITHUB_SHA" > bin/commit
+          # separated debug information written by predeploy.sh, prefixed to stay unique
+          for f in staging/*/*.debug.tgz; do
+            [[ -e "$f" ]] || continue
+            target="$(basename "$(dirname "$f")")"
+            cp -v "$f" "debug/${target#core-}-$(basename "$f")"
+          done
+          ls -l bin
+
+      - name: Fetch official cores
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse "$REFERENCE_REPO" reference
+          git -C reference sparse-checkout set bin
+          ls -l reference/bin
+
+      - name: Verify
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version || 'reference' }}
+        run: |
+          python3 .github/scripts/verify_cores.py bin \
+            --reference reference/bin \
+            --load --expect-version "$EXPECTED_VERSION" | tee verify-report.txt
+
+      - name: Write report to the run summary
+        if: always()
+        run: |
+          {
+            echo '### Core verification'
+            echo '```'
+            cat verify-report.txt 2>/dev/null || echo 'The verifier did not run.'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      
+      - name: Upload verified binaries
+        uses: actions/upload-artifact@v6
+        with:
+          name: edopro-core-${{ github.sha }}
+          path: bin/
+          if-no-files-found: error
+      
+      - name: Upload debug information
+        uses: actions/upload-artifact@v6
+        with:
+          name: edopro-core-debug-${{ github.sha }}
+          path: debug/
+          if-no-files-found: warn
+      
+      - name: Upload UNVERIFIED binaries for inspection
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: edopro-core-UNVERIFIED-${{ github.sha }}
+          path: bin/
+          if-no-files-found: ignore
+  
+  # ---- PUBLISH -----
+  publish:
+    name: Publish
+    needs: assemble
+    if: >-
+      vars.CORE_PUBLISH_REPO != '' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.publish) ||
+       (github.event_name == 'push' && vars.CORE_PUBLISH_ON_PUSH == 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: custom-core-publish
+      cancel-in-progress: false
+    env:
+      PUBLISH_PATH: ${{ vars.CORE_PUBLISH_PATH || 'bin' }}
+    steps:
+      - name: Download verified binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: edopro-core-${{ github.sha }}
+          path: new-bin
+      
+      - name: Check out target repo
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ vars.CORE_PUBLISH_REPO }}
+          ref: ${{ vars.CORE_PUBLISH_BRANCH }}     # empty = the target's default branch
+          token: ${{ secrets.CORE_PUBLISH_TOKEN }}
+          path: target
+          fetch-depth: 1
+      
+      - name: Commit and push
+        run: |
+          mkdir -p "target/$PUBLISH_PATH"
+          cp -v new-bin/* "target/$PUBLISH_PATH/"    # overwrites the core files only
+          cd target
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- "$PUBLISH_PATH"
+          if git diff --cached --quiet; then
+            echo "Binaries identical to the published ones; nothing to push."
+            exit 0
+          fi
+          git commit -m "Update ocgcore binaries to ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+          git push origin "HEAD:$(git rev-parse --abbrev-ref HEAD)"
