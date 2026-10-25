@@ -41,6 +41,19 @@
 #define LOCATION_STZONE  0x400
 #define LOCATION_MMZONE  0x800
 #define LOCATION_EMZONE  0x1000
+
+// [skill_zone] The Skill Zone is an out-of-field, per-player zone for Skill cards.
+// Internally a card in it has current.location == 0 (it is in no field container except
+// player_info::list_skill) and current.skill == true;
+// LOCATION_SKILL never reaches the wire: every location written to a message is 8 bits wide,
+// so a Skill-Zone card appears there as location 0 with sequence SKILL_ZONE_SEQUENCE.
+#define LOCATION_SKILL	0x4000
+// [skill_zone] Sequence of every card in the Skill Zone. Other location-0 cards (Tokens not yet
+// summoned, cards removed from the Duel with Duel.SendtoDeck(c,p,-2,r)) always have sequence 0,
+// so (location 0, sequence SKILL_ZONE_SEQUENCE) identifies a Skill-Zone card in messages.
+// It must fit in 8 bits.
+#define SKILL_ZONE_SEQUENCE 0xff
+
 //Locations redirect
 #define LOCATION_DECKBOT	0x10001		//Return to deck bottom
 #define LOCATION_DECKSHF	0x20001		//Return to deck and shuffle

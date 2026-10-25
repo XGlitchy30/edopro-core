@@ -492,6 +492,28 @@ LUA_STATIC_FUNCTION(SendtoDeck) {
 		return 1;
 	});
 }
+
+// [skill_zone] Duel.SendtoSkill(Card|Group targets, int|nil player, int reason[, int reason_player])
+// Puts targets face-up in the Skill Zone of player (nil/PLAYER_NONE: of each card's owner) with REASON_RULE.
+// Returns the number of cards put in the Skill Zone (Duel.GetOperatedGroup holds them).
+LUA_STATIC_FUNCTION(SendtoSkill) {
+	check_action_permission(L);
+	check_param_count(L, 3);
+	auto playerid = lua_get<uint8_t, PLAYER_NONE>(L, 2);
+	if(playerid > PLAYER_NONE)
+		return 0;
+	auto reason = lua_get<uint32_t>(L, 3);
+	const auto reasonplayer = lua_get<uint8_t>(L, 4, pduel->game_field->core.reason_player);
+	if(auto [pcard, pgroup] = lua_get_card_or_group(L, 1); pcard)
+		pduel->game_field->send_to(pcard, pduel->game_field->core.reason_effect, reason, reasonplayer, playerid, LOCATION_SKILL, 0, POS_FACEUP);
+	else
+		pduel->game_field->send_to(pgroup->container, pduel->game_field->core.reason_effect, reason, reasonplayer, playerid, LOCATION_SKILL, 0, POS_FACEUP);
+	return yieldk({
+		lua_pushinteger(L, pduel->game_field->returns.at<int32_t>(0));
+		return 1;
+	});
+}
+
 LUA_STATIC_FUNCTION(SendtoExtraP) {
 	check_action_permission(L);
 	check_param_count(L, 3);
@@ -738,7 +760,7 @@ LUA_STATIC_FUNCTION(MoveSequence) {
 
 	auto& core = field.core;
 	bool res = false;
-	if(pcard->is_affect_by_effect(core.reason_effect)) {
+	if(pcard->is_affect_by_effect(core.reason_effect) && !pcard->is_in_skill_zone()) { // [skill_zone]
 		const auto previous_loc_info = pcard->get_info_location();
 		const auto previous_code = pcard->data.code;
 		if(res = field.move_card(playerid, pcard, pcard->current.location, seq, pzone); res) {

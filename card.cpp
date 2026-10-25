@@ -226,6 +226,16 @@ loc_info card::get_info_location() {
 		return { current.controler, current.location , current.sequence, current.position };
 	}
 }
+
+// [skill-zone]: Effects of oher cards can neither affect nor target a card in a Skill Zone, unless they have EFFECT_FLAG_IGNORE_IMMUNE
+bool card::is_protected_in_skill_zone(effect* peffect) const {
+	if(!peffect || !is_in_skill_zone())
+		return false;
+	if(peffect->is_flag(EFFECT_FLAG_IGNORE_IMMUNE))
+		return false;
+	return peffect->get_owner() != this && peffect->get_handler() != this;
+}
+
 // mapping of double-name cards
 uint32_t card::second_code(uint32_t code){
 	switch(code){
@@ -1613,6 +1623,7 @@ void card::xyz_remove(card* mat) {
 	mat->previous.location = mat->current.location;
 	mat->previous.sequence = mat->current.sequence;
 	mat->previous.pzone = mat->current.pzone;
+	mat->previous.skill = mat->current.skill; // [skill-zone]
 	mat->current.controler = PLAYER_NONE;
 	mat->current.location = 0;
 	mat->current.sequence = 0;
@@ -1655,7 +1666,8 @@ void card::cancel_field_effect() {
 // false: before moving, summoning, chaining
 // true: ready
 void card::enable_field_effect(bool enabled) {
-	if (current.location == 0)
+	// [skill_zone] location-0 cards never get STATUS_EFFECT_ENABLED, except those in the Skill Zone
+	if (current.location == 0 && !current.skill)
 		return;
 	if ((enabled && get_status(STATUS_EFFECT_ENABLED)) || (!enabled && !get_status(STATUS_EFFECT_ENABLED)))
 		return;
@@ -2281,7 +2293,8 @@ int32_t card::is_can_add_counter(uint8_t playerid, uint16_t countertype, uint16_
 	if(count > 0) {
 		if(!pduel->game_field->is_player_can_place_counter(playerid, this, countertype, count))
 			return FALSE;
-		if(!loc && (!(current.location & LOCATION_ONFIELD) || !is_position(POS_FACEUP)))
+		// [skill_zone] the Skill Zone can hold counters
+		if(!loc && (!((current.location & LOCATION_ONFIELD) || is_in_skill_zone()) || !is_position(POS_FACEUP)))
 			return FALSE;
 		if((countertype & COUNTER_NEED_ENABLE) && is_status(STATUS_DISABLED))
 			return FALSE;
@@ -2293,7 +2306,10 @@ int32_t card::is_can_add_counter(uint8_t playerid, uint16_t countertype, uint16_
 			uint32_t prange = peffect->get_value();
 			if(loc)
 				check = loc & prange;
-			else if(current.location & LOCATION_ONFIELD) {
+			
+			// [skill_zone] in the Skill Zone the permit must include LOCATION_SKILL
+			// (Card.EnableCounterPermit(c,ctype,LOCATION_SKILL))
+			else if((current.location & LOCATION_ONFIELD) || is_in_skill_zone()) {
 				uint32_t filter = TRUE;
 				if(peffect->target) {
 					pduel->lua->add_param<LuaParam::EFFECT>(peffect);
@@ -3166,6 +3182,8 @@ int32_t card::is_summonable(effect* peffect, uint8_t min_tribute, uint32_t zone,
 // min_tribute: the limit of min tribute number by EFFECT_EXTRA_SUMMON_COUNT
 // return: whether playerid can summon this or not
 int32_t card::is_can_be_summoned(uint8_t playerid, uint8_t ignore_count, effect* peffect, uint8_t min_tribute, uint32_t zone) {
+	if(is_in_skill_zone())	// [skill_zone]
+		return FALSE;
 	if(!is_summonable_card())
 		return FALSE;
 	{
@@ -3315,6 +3333,8 @@ int32_t card::is_special_summonable(uint8_t playerid, uint32_t summon_type) {
 	return static_cast<uint32_t>(eset.size());
 }
 int32_t card::is_can_be_special_summoned(effect* reason_effect, uint32_t sumtype, uint8_t sumpos, uint8_t sumplayer, uint8_t toplayer, uint8_t nocheck, uint8_t nolimit, uint32_t zone) {
+	if(is_in_skill_zone())	// [skill_zone]
+		return FALSE;
 	if(reason_effect->get_handler() == this)
 		reason_effect->status |= EFFECT_STATUS_SUMMON_SELF;
 	if(current.location == LOCATION_MZONE)
@@ -3377,6 +3397,8 @@ int32_t card::is_can_be_special_summoned(effect* reason_effect, uint32_t sumtype
 }
 // if this does not have a set set procedure, it will check ordinary set (see is_can_be_summoned())
 int32_t card::is_setable_mzone(uint8_t playerid, uint8_t ignore_count, effect* peffect, uint8_t min_tribute, uint32_t zone) {
+	if(is_in_skill_zone())	// [skill_zone]
+		return FALSE;
 	if(!is_summonable_card())
 		return FALSE;
 	{
@@ -3415,6 +3437,8 @@ int32_t card::is_setable_mzone(uint8_t playerid, uint8_t ignore_count, effect* p
 	return TRUE;
 }
 int32_t card::is_setable_szone(uint8_t playerid, uint8_t ignore_fd) {
+	if(is_in_skill_zone())	// [skill_zone]
+		return FALSE;
 	if(!(data.type & TYPE_FIELD) && !ignore_fd && pduel->game_field->get_useable_count(this, playerid, LOCATION_SZONE, current.controler, LOCATION_REASON::TOFIELD) <= 0)
 		return FALSE;
 	if(data.type & TYPE_MONSTER && !is_affected_by_effect(EFFECT_MONSTER_SSET))
@@ -3439,6 +3463,8 @@ int32_t card::is_affect_by_effect(effect* peffect) {
 		return FALSE;
 	if(!peffect || peffect->is_flag(EFFECT_FLAG_IGNORE_IMMUNE))
 		return TRUE;
+	if(is_protected_in_skill_zone(peffect))	// [skill_zone]
+		return FALSE;
 	if(peffect->is_immuned(this))
 		return FALSE;
 	return TRUE;
@@ -3830,6 +3856,8 @@ int32_t card::is_capable_be_battle_target(card* pcard) {
 }
 int32_t card::is_capable_be_effect_target(effect* peffect, uint8_t playerid) {
 	if(is_status(STATUS_SUMMONING) || is_status(STATUS_BATTLE_DESTROYED))
+		return FALSE;
+	if(is_protected_in_skill_zone(peffect))		// [skill_zone]
 		return FALSE;
 	if(current.location & (LOCATION_DECK | LOCATION_EXTRA | LOCATION_HAND))
 		return FALSE;

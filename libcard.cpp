@@ -1631,7 +1631,8 @@ LUA_FUNCTION(IsLocation) {
 		else
 			lua_pushboolean(L, 0);
 	} else
-		lua_pushboolean(L, (self->current.location & loc) != 0);
+		// [skill_zone] LOCATION_SKILL matches a location-0 card only when it is in the Skill Zone
+		lua_pushboolean(L, (self->current.location & loc) != 0 || ((loc & LOCATION_SKILL) && self->is_in_skill_zone()));
 	return 1;
 }
 LUA_FUNCTION(IsPreviousLocation) {
