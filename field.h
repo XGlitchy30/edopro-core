@@ -97,6 +97,7 @@ struct player_info {
 	card_vector list_hand;
 	card_vector list_remove;
 	card_vector list_extra;
+	card_vector list_skill;	// [skill_zone] cards in this player's Skill Zone (location 0 + card_state::skill), in arrival order.
 	std::vector<card_vector> extra_lists_main;
 	std::vector<card_vector> extra_lists_hand;
 	std::vector<card_vector> extra_lists_extra;
@@ -428,9 +429,9 @@ public:
 	~field() = default;
 	void reload_field_info();
 
-	void add_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t sequence, bool pzone = false);
+	void add_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t sequence, bool pzone = false, bool skill = false); // [skill_zone]
 	void remove_card(card* pcard);
-	bool move_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t sequence, bool pzone = false);
+	bool move_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t sequence, bool pzone = false, bool skill = false); // [skill_zone]
 	void swap_card(card* pcard1, card* pcard2, uint8_t new_sequence1, uint8_t new_sequence2);
 	void swap_card(card* pcard1, card* pcard2);
 	void set_control(card* pcard, uint8_t playerid, uint16_t reset_phase, uint8_t reset_count);

@@ -32,7 +32,12 @@ void chain::set_triggering_state(card* pcard) {
 			triggering_location |= LOCATION_EMZONE;
 		else if(pcard->current.is_location(LOCATION_MMZONE))
 			triggering_location |= LOCATION_MMZONE;
+	} else if(pcard->is_in_skill_zone()) {
+		// [skill_zone]
+		triggering_location = LOCATION_SKILL;
 	}
+
+
 	triggering_sequence = pcard->current.sequence;
 	triggering_position = pcard->current.position;
 	triggering_status = pcard->status;
@@ -117,8 +122,8 @@ void field::reload_field_info() {
 }
 // The core of moving cards, and Debug.AddCard() will call this function directly.
 // check Fusion/S/X monster redirection by the rule, set fieldid_r
-void field::add_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t sequence, bool pzone) {
-	if (pcard->current.location != 0)
+void field::add_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t sequence, bool pzone, bool skill) {
+	if (pcard->current.location != 0 || pcard->current.skill) // [skill_zone]
 		return;
 	if (!is_location_useable(playerid, location, sequence))
 		return;
@@ -192,8 +197,17 @@ void field::add_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t se
 		reset_sequence(playerid, LOCATION_EXTRA);
 		break;
 	}
+	case 0: {
+		// [skill_zone] location 0 without skill keeps the vanilla behaviour (the card is in no zone)
+		if(skill) {
+			player[playerid].list_skill.push_back(pcard);
+			pcard->current.sequence = SKILL_ZONE_SEQUENCE;
+		}
+		break;
+	}
 	}
 	pcard->current.pzone = pzone;
+	pcard->current.skill = (location == 0) && skill; // [skill_zone] set before apply_field_effect, so that field effects with range LOCATION_SKILL are in range
 	pcard->apply_field_effect();
 	pcard->fieldid = infos.field_id++;
 	pcard->fieldid_r = pcard->fieldid;
@@ -206,7 +220,7 @@ void field::add_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t se
 		player[playerid].used_location |= 256 << sequence;
 }
 void field::remove_card(card* pcard) {
-	if (pcard->current.controler == PLAYER_NONE || pcard->current.location == 0)
+	if (pcard->current.controler == PLAYER_NONE || (pcard->current.location == 0 && !pcard->current.skill)) // [skill_zone]
 		return;
 	uint8_t playerid = pcard->current.controler;
 	switch (pcard->current.location) {
@@ -240,6 +254,12 @@ void field::remove_card(card* pcard) {
 		if((pcard->data.type & TYPE_PENDULUM) && (pcard->current.position & POS_FACEUP))
 			--player[playerid].extra_p_count;
 		break;
+	case 0: {
+		// [skill_zone]
+		auto& list_skill = player[playerid].list_skill;
+		list_skill.erase(std::remove(list_skill.begin(), list_skill.end(), pcard), list_skill.end());
+		break;
+	}
 	}
 	pcard->cancel_field_effect();
 	if (pcard->current.location == LOCATION_MZONE)
@@ -253,9 +273,11 @@ void field::remove_card(card* pcard) {
 	pcard->previous.sequence = pcard->current.sequence;
 	pcard->previous.position = pcard->current.position;
 	pcard->previous.pzone = pcard->current.pzone;
+	pcard->previous.skill = pcard->current.skill; // [skill-zone]
 	pcard->current.controler = PLAYER_NONE;
 	pcard->current.location = 0;
 	pcard->current.sequence = 0;
+	pcard->current.skill = false; // [skill-zone]
 }
 // moving cards:
 // 1. draw()
@@ -264,9 +286,19 @@ void field::remove_card(card* pcard) {
 // 4. control_adjust()
 // 5. move_card()
 // check Fusion/S/X monster redirection by the rule
-bool field::move_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t sequence, bool pzone) {
+bool field::move_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t sequence, bool pzone, bool skill) {
 	if (!is_location_useable(playerid, location, sequence))
 		return false;
+	
+	// [skill_zone] 
+	skill = skill && (location == 0);
+	if(pcard->is_in_skill_zone()) {
+		if(skill && pcard->current.controler == playerid)
+			// moving it to the Skill Zone of its own controller is a no-op.
+			return false;
+		remove_card(pcard);
+	}
+
 	uint8_t preplayer = pcard->current.controler;
 	uint8_t presequence = pcard->current.sequence;
 	if(pcard->is_extra_deck_monster() && (location & (LOCATION_HAND | LOCATION_DECK))) {
@@ -321,6 +353,7 @@ bool field::move_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t s
 				pcard->previous.sequence = pcard->current.sequence;
 				pcard->previous.position = pcard->current.position;
 				pcard->previous.pzone = pcard->current.pzone;
+				pcard->previous.skill = pcard->current.skill; // [skill_zone]
 				if (location == LOCATION_MZONE) {
 					player[preplayer].list_mzone[presequence] = nullptr;
 					player[preplayer].used_location &= ~(1 << presequence);
@@ -395,7 +428,7 @@ bool field::move_card(uint8_t playerid, card* pcard, uint8_t location, uint8_t s
 			remove_card(pcard);
 		}
 	}
-	add_card(playerid, pcard, location, sequence, pzone);
+	add_card(playerid, pcard, location, sequence, pzone, skill);
 	return true;
 }
 void field::swap_card(card* pcard1, card* pcard2, uint8_t new_sequence1, uint8_t new_sequence2) {
@@ -416,6 +449,7 @@ void field::swap_card(card* pcard1, card* pcard2, uint8_t new_sequence1, uint8_t
 		pcard1->previous.sequence = s1;
 		pcard1->previous.position = pcard1->current.position;
 		pcard1->previous.pzone = pcard1->current.pzone;
+		pcard1->previous.skill = pcard1->current.skill; // [skill_zone]
 		pcard1->current.controler = p2;
 		pcard1->current.location = l2;
 		pcard1->current.sequence = new_sequence2;
@@ -424,6 +458,7 @@ void field::swap_card(card* pcard1, card* pcard2, uint8_t new_sequence1, uint8_t
 		pcard2->previous.sequence = s2;
 		pcard2->previous.position = pcard2->current.position;
 		pcard2->previous.pzone = pcard2->current.pzone;
+		pcard2->previous.skill = pcard2->current.skill; // [skill_zone]
 		pcard2->current.controler = p1;
 		pcard2->current.location = l1;
 		pcard2->current.sequence = new_sequence1;
@@ -586,6 +621,12 @@ card* field::get_field_card(uint32_t playerid, uint32_t location, uint32_t seque
 	case LOCATION_EXTRA: {
 		if(sequence < player[playerid].list_extra.size())
 			return player[playerid].list_extra[sequence];
+		return nullptr;
+	}
+	case LOCATION_SKILL: {
+		// [skill_zone] Duel.GetFieldCard(p,LOCATION_SKILL,i): i-th card of the Skill Zone
+		if(sequence < player[playerid].list_skill.size())
+			return player[playerid].list_skill[sequence];
 		return nullptr;
 	}
 	}
@@ -1653,6 +1694,9 @@ int32_t field::filter_matching_card(int32_t findex, uint8_t self, uint32_t locat
 			return TRUE;
 		if((location & LOCATION_REMOVED) && check_list(player[self].list_remove, checkc))
 			return TRUE;
+		// [skill_zone]
+		if((location & LOCATION_SKILL) && check_list(player[self].list_skill, checkc))
+			return TRUE;
 	}
 	return FALSE;
 }
@@ -1767,6 +1811,12 @@ int32_t field::filter_field_card(uint8_t self, uint32_t location1, uint32_t loca
 			if(pgroup)
 				pgroup->container.insert(player[self].list_remove.rbegin(), player[self].list_remove.rend());
 			count += player[self].list_remove.size();
+		}
+		// [skill_zone]
+		if(location & LOCATION_SKILL) {
+			if(pgroup)
+				pgroup->container.insert(player[self].list_skill.begin(), player[self].list_skill.end());
+			count += player[self].list_skill.size();
 		}
 	}
 	return static_cast<int32_t>(count);

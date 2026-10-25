@@ -149,6 +149,8 @@ int32_t effect::is_activateable(uint8_t playerid, const tevent& e, int32_t negle
 		return FALSE;
 	if (!is_flag(EFFECT_FLAG_FIELD_ONLY)) {
 		if (type & EFFECT_TYPE_ACTIVATE) {
+			if(handler->is_in_skill_zone()) // [skill-zone]
+				return FALSE;
 			if((handler->current.controler != playerid) && !(flag[0] & EFFECT_FLAG_BOTH_SIDE))
 				return FALSE;
 			if(pduel->game_field->check_unique_onfield(handler, playerid, LOCATION_SZONE))

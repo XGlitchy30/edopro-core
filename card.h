@@ -53,6 +53,7 @@ struct card_state {
 	uint32_t position{};
 	uint32_t reason{};
 	bool pzone{};
+	bool skill{};	// [skill-zone]
 	card* reason_card{};
 	uint8_t reason_player{};
 	effect* reason_effect{};
@@ -73,6 +74,9 @@ struct card_state {
 		return false;
 	}
 	bool is_location(uint16_t loc) const {
+		// [skill-zone]: LOCATION_SKILL matches location 0 + skill
+		if((loc & LOCATION_SKILL) && location == 0 && skill)
+			return true;
 		return is_location(*this, loc);
 	}
 	void set0xff();
@@ -101,17 +105,22 @@ public:
 			position = pos;
 			location = loc;
 			sequence = seq;
+			skill = false;
 		}
 		void clear() {
 			playerid = 0;
 			position = 0;
 			location = 0;
 			sequence = 0;
+			skill = false;
 		}
 		uint8_t playerid{};
 		uint8_t position{};
 		uint8_t location{};
 		uint8_t sequence{};
+		// [skill_zone]: destination is the Skill Zone (location is then 0). Set by field::send_to
+		// when it receives LOCATION_SKILL
+		bool skill{};
 	};
 	card_data data{};
 	card_state previous{};
@@ -197,6 +206,15 @@ public:
 	}
 	int32_t is_related_to_chains();
 	loc_info get_info_location();
+
+	// [skill_zone] the card is in its controller's Skill Zone
+	bool is_in_skill_zone() const {
+		return current.location == 0 && current.skill;
+	}
+	// [skill_zone] the card is in the Skill Zone and peffect belongs to another card: such effects
+	// can neither affect nor target it (see card::is_affect_by_effect, is_capable_be_effect_target)
+	bool is_protected_in_skill_zone(effect* peffect) const;
+
 	uint32_t second_code(uint32_t code);
 	uint32_t get_code();
 	uint32_t get_another_code();

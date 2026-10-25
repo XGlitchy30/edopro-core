@@ -119,6 +119,15 @@ void field::remove_overlay_card(uint32_t reason, group* pgroup, uint32_t rplayer
 	emplace_process<Processors::RemoveOverlay>(reason, pgroup, rplayer, self, oppo, min, max);
 }
 void field::xyz_overlay(card* target, card_set materials, bool send_materials_to_grave) {
+	// [skill_zone] a Skill-Zone card cannot be used as Xyz Material and cannot hold materials
+	if(target->is_in_skill_zone())
+		materials.clear();
+	for(auto it = materials.begin(); it != materials.end();) {
+		if((*it)->is_in_skill_zone())
+			it = materials.erase(it);
+		else
+			++it;
+	}
 	auto ng = pduel->new_group(std::move(materials));
 	ng->is_readonly = true;
 	emplace_process<Processors::XyzOverlay>(target, ng, send_materials_to_grave);
@@ -329,6 +338,10 @@ void field::send_to(card_set targets, effect* reason_effect, uint32_t reason, ui
 		else if(position == 0)
 			pos = pcard->current.position;
 		pcard->sendto_param.set(p, pos, destination, sequence);
+
+		// [skill_zone]
+		if(destination == LOCATION_SKILL)
+			pcard->sendto_param.skill = true;
 	}
 	auto ng = pduel->new_group(std::move(targets));
 	ng->is_readonly = true;
@@ -446,6 +459,7 @@ bool field::process(Processors::Draw& arg) {
 			pcard->previous.sequence = pcard->current.sequence;
 			pcard->previous.position = pcard->current.position;
 			pcard->previous.pzone = pcard->current.pzone;
+			pcard->previous.skill = pcard->current.skill; // [skill_zone]
 			pcard->current.controler = PLAYER_NONE;
 			pcard->current.reason_effect = reason_effect;
 			pcard->current.reason_player = reason_player;
@@ -1681,6 +1695,11 @@ bool field::process(Processors::Equip& arg) {
 		returns.set<int32_t>(0, FALSE);
 		if(!equip_card->is_affect_by_effect(core.reason_effect))
 			return TRUE;
+
+		// [skill_zone] a card cannot be equipped from the Skill Zone (for now?)
+		if(equip_card->is_in_skill_zone())
+			return TRUE;
+
 		if(equip_card == target)
 			return TRUE;
 		bool to_grave = false;
@@ -1781,6 +1800,8 @@ bool field::process(Processors::SummonRule& arg) {
 	auto zone = arg.zone;
 	switch(arg.step) {
 	case 0: {
+		if(target->is_in_skill_zone()) // [skill_zone]
+			return TRUE;
 		if(!target->is_summonable_card())
 			return TRUE;
 		if(check_unique_onfield(target, sumplayer, LOCATION_MZONE))
@@ -2762,6 +2783,8 @@ bool field::process(Processors::SpellSet& arg) {
 	auto reason_effect = arg.reason_effect;
 	switch(arg.step) {
 	case 0: {
+		if(target->is_in_skill_zone()) // [skill_zone]: maybe change?
+			return TRUE;
 		if(!(target->data.type & TYPE_FIELD) && get_useable_count(target, toplayer, LOCATION_SZONE, setplayer, LOCATION_REASON::TOFIELD) <= 0)
 			return TRUE;
 		if(target->data.type & TYPE_MONSTER && !target->is_affected_by_effect(EFFECT_MONSTER_SSET))
@@ -2828,6 +2851,7 @@ bool field::process(Processors::SpellSetGroup& arg) {
 		core.operated_set.clear();
 		for(auto& target : ptarget->container) {
 			if((!(target->data.type & TYPE_FIELD) && get_useable_count(target, toplayer, LOCATION_SZONE, setplayer, LOCATION_REASON::TOFIELD) <= 0)
+				|| target->is_in_skill_zone() // [skill_zone]: maybe change?
 				|| (target->data.type & TYPE_MONSTER && !target->is_affected_by_effect(EFFECT_MONSTER_SSET))
 				|| (target->current.location == LOCATION_SZONE)
 				|| (!is_player_can_sset(setplayer, target))
@@ -3546,6 +3570,7 @@ bool field::process(Processors::SpSummonStep& arg) {
 			}
 		}
 		if((target->current.location == LOCATION_MZONE)
+			|| target->is_in_skill_zone() // [skill_zone]
 			|| (!(positions & POS_FACEDOWN) && check_unique_onfield(target, playerid, LOCATION_MZONE))
 			|| !is_player_can_spsummon(core.reason_effect, target->summon.type & 0xff00ffff, positions, target->summon.player, playerid, target)
 			|| (!nocheck && !(target->data.type & TYPE_MONSTER))) {
@@ -3805,6 +3830,13 @@ bool field::process(Processors::Destroy& arg) {
 				indestructable_set.insert(pcard);
 				continue;
 			}
+
+			// [skill_zone]: Skill Zone cards can be popped only by REASON_RULE
+			if(pcard->is_in_skill_zone() && !(pcard->current.reason & REASON_RULE)) {
+				indestructable_set.insert(pcard);
+				continue;
+			}
+
 			if(!(pcard->current.reason & (REASON_RULE | REASON_COST))) {
 				bool is_destructable = true;
 				if(!pcard->current.reason_effect || pcard->is_affect_by_effect(pcard->current.reason_effect)) {
@@ -4153,6 +4185,7 @@ bool field::process(Processors::Release& arg) {
 			auto rm = cit++;
 			card* pcard = *rm;
 			if(pcard->get_status(STATUS_SUMMONING | STATUS_SPSUMMON_STEP)
+				|| (pcard->is_in_skill_zone() && !(reason & REASON_RULE)) // [skill_zone]: Skill Zone cards can only be tributed by REASON_RULE
 				|| ((reason & REASON_SUMMON) && !pcard->is_releasable_by_summon(reason_player, pcard->current.reason_card))
 				|| (!(pcard->current.reason & (REASON_RULE | REASON_SUMMON | REASON_COST))
 					&& (!pcard->is_affect_by_effect(pcard->current.reason_effect) || !pcard->is_releasable_by_nonsummon(reason_player, reason)))) {
@@ -4262,7 +4295,9 @@ bool field::process(Processors::SendTo& arg) {
 					|| (dest == LOCATION_DECK && !pcard->is_capable_send_to_deck(core.reason_player))
 					|| (dest == LOCATION_REMOVED && !pcard->is_removeable(core.reason_player, pcard->sendto_param.position, reason))
 					|| (dest == LOCATION_GRAVE && !pcard->is_capable_send_to_grave(core.reason_player, reason))
-					|| (dest == LOCATION_EXTRA && !pcard->is_capable_send_to_extra(core.reason_player)))) {
+					|| (dest == LOCATION_EXTRA && !pcard->is_capable_send_to_extra(core.reason_player))
+					|| pcard->is_in_skill_zone() // [skill_zone]: only REASN_RULE can relocate Skill Zone cards
+				)) {
 				pcard->current.reason = pcard->temp.reason;
 				pcard->current.reason_player = pcard->temp.reason_player;
 				pcard->current.reason_effect = pcard->temp.reason_effect;
@@ -4454,6 +4489,7 @@ bool field::process(Processors::SendTo& arg) {
 			pcard->previous.sequence = pcard->current.sequence;
 			pcard->previous.position = pcard->current.position;
 			pcard->previous.pzone = pcard->current.pzone;
+			pcard->previous.skill = pcard->current.skill; // [skill_zone]
 			pcard->current.reason &= ~REASON_TEMPORARY;
 			pcard->fieldid = infos.field_id++;
 			pcard->fieldid_r = pcard->fieldid;
@@ -4494,18 +4530,28 @@ bool field::process(Processors::SendTo& arg) {
 			core.hint_timing[control_player] |= TIMING_REMOVE;
 		}
 		//call move_card()
-		if(pcard->current.controler != playerid || pcard->current.location != dest) {
-			auto message = pduel->new_message(MSG_MOVE);
-			message->write<uint32_t>(pcard->data.code);
-			message->write(pcard->get_info_location());
+		// [skill_zone] entering or leaving the Skill Zone is a move even when both locations are 0
+		const bool to_skill = (dest == 0) && pcard->sendto_param.skill;
+		if(pcard->current.controler != playerid || pcard->current.location != dest || pcard->current.skill != to_skill) {
+			// [skill_zone] no MSG_MOVE between two location-0 states (no zone <-> Skill Zone, or one Skill Zone to the other)
+			duel::duel_message* message = nullptr;
+			if(oloc != 0 || dest != 0) {
+				message = pduel->new_message(MSG_MOVE);
+				message->write<uint32_t>(pcard->data.code);
+				message->write(pcard->get_info_location());
+			}
 			if(pcard->overlay_target) {
 				param->detach.insert(pcard->overlay_target);
 				pcard->overlay_target->xyz_remove(pcard);
 			}
-			move_card(playerid, pcard, dest, seq);
+			move_card(playerid, pcard, dest, seq, false, to_skill); // [skill_zone]
 			pcard->current.position = pcard->sendto_param.position;
-			message->write(pcard->get_info_location());
-			message->write<uint32_t>(pcard->current.reason);
+
+			// [skill_zone]: handle message
+			if(message) {
+				message->write(pcard->get_info_location());
+				message->write<uint32_t>(pcard->current.reason);
+			}
 		}
 		if(pcard->current.location == LOCATION_DECK && (core.deck_reversed || (pcard->current.position == POS_FACEUP_DEFENSE)))
 			param->check_decktop_visibility[control_player] = true;
@@ -4818,6 +4864,7 @@ bool field::process(Processors::DiscardDeck& arg) {
 			pcard->previous.sequence = pcard->current.sequence;
 			pcard->previous.position = pcard->current.position;
 			pcard->previous.pzone = pcard->current.pzone;
+			pcard->previous.skill = pcard->current.skill; // [skill_zone]
 			pcard->current.controler = PLAYER_NONE;
 			pcard->current.location = 0;
 			add_card(pcard->owner, pcard, dest, 0);
